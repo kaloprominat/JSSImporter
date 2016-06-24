@@ -174,6 +174,16 @@ class JSSImporter(Processor):
             "description": "Text to apply to the package's Notes field.",
             "default": ""
         },
+        "prod_groups": {
+            "required": False,
+            "description":
+                "Array of group dictionaries. Wrap each group in a "
+                "dictionary. Group keys include 'name' (Name of the group to "
+                "use, required), 'smart' (Boolean: static group=False, smart "
+                "group=True, default is False, not required), and "
+                "template_path' (string: path to template file to use for "
+                "group, required for smart groups, invalid for static groups)",
+        },
         "groups": {
             "required": False,
             "description":
@@ -200,10 +210,17 @@ class JSSImporter(Processor):
                 "'ext_attribute_path' (string: path to extension attribute "
                 "file.)",
         },
+        "policy_prod_template": {
+            "required": False,
+            "description":
+                "Filename of production policy template file. If key is "
+                "missing or value is blank, policy creation will be skipped.",
+            "default": "",
+        },
         "policy_template": {
             "required": False,
             "description":
-                "Filename of policy template file. If key is "
+                "Filename of testing policy template file. If key is "
                 "missing or value is blank, policy creation will be skipped.",
             "default": "",
         },
@@ -257,8 +274,10 @@ class JSSImporter(Processor):
         self.replace_dict = {}
         self.extattrs = None
         self.groups = None
+        self.prod_groups = None
         self.scripts = None
         self.policy = None
+        self.prod_policy = None
 
     def main(self):
         """Main processor code."""
@@ -303,8 +322,10 @@ class JSSImporter(Processor):
 
         self.extattrs = self.handle_extension_attributes()
         self.groups = self.handle_groups()
+        self.prod_groups = self.handle_prod_groups()
         self.scripts = self.handle_scripts()
         self.policy = self.handle_policy()
+        self.prod_policy = self.handle_prod_policy()
         self.handle_icon()
         # Done with DPs, unmount them.
         self.jss.distribution_points.umount()
@@ -326,6 +347,8 @@ class JSSImporter(Processor):
             "jss_extension_attribute_updated": [],
             "jss_policy_added": [],
             "jss_policy_updated": [],
+            "jss_prod_policy_added": [],
+            "jss_prod_policy_updated": [],
             "jss_icon_uploaded": []}
 
     def handle_category(self, category_type):
@@ -461,6 +484,25 @@ class JSSImporter(Processor):
 
         return computer_groups
 
+    def handle_prod_groups(self):
+        """Manage group existence and creation."""
+        groups = self.env.get("prod_groups")
+        computer_groups = []
+        if groups:
+            for group in groups:
+                print group
+                if self.validate_input_var(group):
+                    is_smart = group.get("smart", False)
+                    if is_smart:
+                        computer_group = self.add_or_update_smart_group(group)
+                    else:
+                        computer_group = (
+                            self.add_or_update_static_group(group))
+
+                    computer_groups.append(computer_group)
+
+        return computer_groups
+
     def handle_scripts(self):
         """Add scripts if needed."""
         scripts = self.env.get("scripts")
@@ -489,6 +531,19 @@ class JSSImporter(Processor):
             policy = self.update_or_create_new(
                 jss.Policy, template_filename, update_env="jss_policy_updated",
                 added_env="jss_policy_added")
+        else:
+            self.output("Policy creation not desired, moving on...")
+            policy = None
+
+        return policy
+
+    def handle_prod_policy(self):
+        """Create or update a production policy."""
+        if self.env.get("policy_prod_template"):
+            template_filename = self.env.get("policy_prod_template")
+            policy = self.update_or_create_new(
+                jss.Policy, template_filename, update_env="jss_prod_policy_updated",
+                added_env="jss_prod_policy_added", prod=True)
         else:
             self.output("Policy creation not desired, moving on...")
             policy = None
@@ -542,14 +597,15 @@ class JSSImporter(Processor):
             self.env["jss_importer_summary_result"] = {
                 "summary_text": "The following changes were made to the JSS:",
                 "report_fields": ["Package", "Categories", "Groups", "Scripts",
-                                  "Extension Attributes", "Policy", "Icon"],
+                                  "Extension Attributes", "Testing Policy", "Production Policy", "Icon"],
                 "data": {
                     "Package": "",
                     "Categories": "",
                     "Groups": "",
                     "Scripts": "",
                     "Extension Attributes": "",
-                    "Policy": "",
+                    "Testing Policy": "",
+                    "Production Policy": "",
                     "Icon": ""
                 }
             }
@@ -566,7 +622,12 @@ class JSSImporter(Processor):
             policy = changes["jss_policy_updated"] + (
                 changes["jss_policy_added"])
             if policy:
-                data["Policy"] = self.get_report_string(policy)
+                data["Testing Policy"] = self.get_report_string(policy)
+
+            prod_policy = changes["jss_prod_policy_updated"] + (
+                changes["jss_prod_policy_added"])
+            if policy:
+                data["Production Policy"] = self.get_report_string(prod_policy)
 
             if changes["jss_icon_uploaded"]:
                 data["Icon"] = os.path.basename(self.env["self_service_icon"])
@@ -666,7 +727,7 @@ class JSSImporter(Processor):
 
     # pylint: disable=too-many-arguments
     def update_or_create_new(self, obj_cls, template_path, name="",
-                             added_env="", update_env=""):
+                             added_env="", update_env="", prod=False):
         """Check for an existing object and update it, or create a new
         object.
 
@@ -708,12 +769,18 @@ class JSSImporter(Processor):
                     "self_service/self_service_icon")
                 if icon_xml is not None:
                     self.add_icon_to_policy(recipe_object, icon_xml)
-            self.add_scope_to_policy(recipe_object)
+            if not prod:
+                self.add_scope_to_policy(recipe_object)
+            else:
+                self.add_scope_to_prod_policy(recipe_object)
             self.add_scripts_to_policy(recipe_object)
             self.add_package_to_policy(recipe_object)
 
         if existing_object is not None:
             # Update the existing object.
+
+            # if not obj_cls is jss.Policy or ( obj_cls is jss.Policy and prod != True ) :
+
             url = existing_object.get_object_url()
             self.jss.put(url, recipe_object)
             # Retrieve the updated XML.
@@ -898,6 +965,13 @@ class JSSImporter(Processor):
         computer_groups_element = self.ensure_xml_structure(
             policy_template, "scope/computer_groups")
         for group in self.groups:
+            policy_template.add_object_to_path(group, computer_groups_element)
+
+    def add_scope_to_prod_policy(self, policy_template):
+        """Incorporate scoping groups into a policy."""
+        computer_groups_element = self.ensure_xml_structure(
+            policy_template, "scope/computer_groups")
+        for group in self.prod_groups:
             policy_template.add_object_to_path(group, computer_groups_element)
 
     def add_scripts_to_policy(self, policy_template):
