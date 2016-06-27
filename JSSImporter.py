@@ -125,6 +125,16 @@ class JSSImporter(Processor):
             "'template_path' (string: path to template file to use for group, "
             "required for smart groups, invalid for static groups)",
         },
+        "prod_groups": {
+            "required": False,
+            "description":
+                "Array of group dictionaries. Wrap each group in a "
+                "dictionary. Group keys include 'name' (Name of the group to "
+                "use, required), 'smart' (Boolean: static group=False, smart "
+                "group=True, default is False, not required), and "
+                "template_path' (string: path to template file to use for "
+                "group, required for smart groups, invalid for static groups)",
+        },
         "scripts": {
             "required": False,
             "description": "Array of script dictionaries. Wrap each script in "
@@ -144,6 +154,13 @@ class JSSImporter(Processor):
             "description": "Filename of policy template file. If key is "
             "missing or value is blank, policy creation will be skipped.",
             "default": '',
+        },
+        "policy_prod_template": {
+            "required": False,
+            "description":
+                "Filename of production policy template file. If key is "
+                "missing or value is blank, policy creation will be skipped.",
+            "default": "",
         },
         "self_service_description": {
             "required": False,
@@ -396,6 +413,21 @@ class JSSImporter(Processor):
 
         return computer_groups
 
+    def handle_prod_groups(self):
+        groups = self.env.get('prod_groups')
+        computer_groups = []
+        if groups:
+            for group in groups:
+                is_smart = group.get('smart') or False
+                if is_smart:
+                    computer_group = self._add_or_update_smart_group(group)
+                else:
+                    computer_group = self._add_or_update_static_group(group)
+
+                computer_groups.append(computer_group)
+
+        return computer_groups
+
     def _add_or_update_static_group(self, group):
         """Given a group, either add a new group or update existing group."""
         # Check for pre-existing group first
@@ -422,7 +454,7 @@ class JSSImporter(Processor):
         return computer_group
 
     def _update_or_create_new(self, obj_cls, template_path, name='',
-                              added_env='', update_env=''):
+                              added_env='', update_env='', prod=False):
         """Check for an existing object and update it, or create a new object.
 
         obj_cls:        The python-jss object class to work with.
@@ -461,7 +493,10 @@ class JSSImporter(Processor):
                     'self_service/self_service_icon')
                 if icon_xml is not None:
                     self.add_icon_to_policy(recipe_object, icon_xml)
-            self.add_scope_to_policy(recipe_object)
+            if not prod:
+                self.add_scope_to_policy(recipe_object)
+            else:
+                self.add_scope_to_prod_policy(recipe_object)
             self.add_scripts_to_policy(recipe_object)
             self.add_package_to_policy(recipe_object)
 
@@ -572,10 +607,29 @@ class JSSImporter(Processor):
 
         return policy
 
+    def handle_prod_policy(self):
+        if self.env.get("prod_policy_template"):
+            template_filename = self.env.get("prod_policy_template")
+            policy = self._update_or_create_new(jss.Policy, template_filename,
+                                                update_env="jss_prod_policy_added",
+                                                added_env="jss_prod_policy_updated",
+                                                prod=True)
+        else:
+            self.output("Policy creation not desired, moving on...")
+            policy = None
+
+        return policy
+
     def add_scope_to_policy(self, policy_template):
         computer_groups_element = self.ensure_XML_structure(
             policy_template, 'scope/computer_groups')
         for group in self.groups:
+            policy_template.add_object_to_path(group, computer_groups_element)
+
+    def add_scope_to_prod_policy(self, policy_template):
+        computer_groups_element = self.ensure_XML_structure(
+            policy_template, 'scope/computer_groups')
+        for group in self.prod_groups:
             policy_template.add_object_to_path(group, computer_groups_element)
 
     def add_scripts_to_policy(self, policy_template):
@@ -639,12 +693,16 @@ class JSSImporter(Processor):
         self.env["jss_package_updated"] = False
         self.env["jss_group_added"] = False
         self.env["jss_group_updated"] = False
+        self.env["jss_prod_group_added"] = False
+        self.env["jss_prod_group_updated"] = False
         self.env["jss_script_added"] = False
         self.env["jss_script_updated"] = False
         self.env["jss_extension_attribute_added"] = False
         self.env["jss_extension_attribute_updated"] = False
         self.env["jss_policy_added"] = False
         self.env["jss_policy_updated"] = False
+        self.env["jss_prod_policy_added"] = False
+        self.env["jss_prod_policy_updated"] = False
         self.env["jss_icon_uploaded"] = False
 
         self.category = self.handle_category("category")
@@ -657,8 +715,10 @@ class JSSImporter(Processor):
 
         self.extattrs = self.handle_extension_attributes()
         self.groups = self.handle_groups()
+        self.prod_grousp = self.handle_prod_groups()
         self.scripts = self.handle_scripts()
         self.policy = self.handle_policy()
+        self.prod_policy = self.handle_prod_policy()
         self.handle_icon()
         # Done with DPs, unmount them.
         self.j.distribution_points.umount()
