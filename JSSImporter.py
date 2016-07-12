@@ -1015,11 +1015,11 @@ class JSSImporter(Processor):
         self.build_replace_dict()
 
         self.extattrs = self.handle_extension_attributes()
+        self.policy = self.handle_policy()
+        self.prod_policy = self.handle_prod_policy()
         self.groups = self.handle_groups()
         self.prod_groups = self.handle_prod_groups()
         self.scripts = self.handle_scripts()
-        self.policy = self.handle_policy()
-        self.prod_policy = self.handle_prod_policy()
         self.handle_icon()
         # Done with DPs, unmount them.
         self.j.distribution_points.umount()
